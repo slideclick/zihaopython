@@ -3,13 +3,13 @@
 #include <gdt.h>
 #include <memorymanagement.h>
 #include <hardwarecommunication/interrupts.h>
-#include <syscalls.h>
 #include <hardwarecommunication/pci.h>
 #include <drivers/driver.h>
 #include <drivers/keyboard.h>
 #include <drivers/mouse.h>
 #include <drivers/vga.h>
 #include <drivers/ata.h>
+#include <filesystem/msdospart.h>
 #include <gui/desktop.h>
 #include <gui/window.h>
 #include <multitasking.h>
@@ -23,6 +23,7 @@
 using namespace myos;
 using namespace myos::common;
 using namespace myos::drivers;
+using namespace myos::filesystem;
 using namespace myos::hardwarecommunication;
 using namespace myos::gui;
 
@@ -140,21 +141,16 @@ public:
 
 
 
-void sysprintf(char* str)
-{
-    asm("int $0x80" : : "a" (4), "b" (str));
-}
 
 void taskA()
 {
     while(true)
-        sysprintf("A");
+        printf("A");
 }
-
 void taskB()
 {
     while(true)
-        sysprintf("D");
+        printf("B");
 }
 
 
@@ -172,41 +168,43 @@ extern "C" void callConstructors()
 }
 
 
+extern "C" void* heap;
+
+
 
 extern "C" void kernelMain(const void* multiboot_structure, uint32_t /*multiboot_magic*/)
 {
-    printf("Hello World! --- http://www.simon.de\n");
+    printf("Hello World! --- http://www.AlgorithMan.de\n");
 
     GlobalDescriptorTable gdt;
     
     
-    uint32_t* memupper = (uint32_t*)(((size_t)multiboot_structure) + 8);
-    size_t heap = 10*1024*1024;
-    MemoryManager memoryManager(heap, (*memupper)*1024 - heap - 10*1024);
+    uint32_t* memupper = (uint32_t*)(multiboot_structure+8);
+    MemoryManager memoryManager((size_t)&heap, (*memupper)*1024 - (size_t)&heap - 10*1024);
     
-    printf("heap: 0x");
-    printfHex((heap >> 24) & 0xFF);
-    printfHex((heap >> 16) & 0xFF);
-    printfHex((heap >> 8 ) & 0xFF);
-    printfHex((heap      ) & 0xFF);
     
-    void* allocated = memoryManager.malloc(1024);
+    printf("\nheap: 0x");
+    printfHex( ((size_t)&heap >> 24) & 0xFF );
+    printfHex( ((size_t)&heap >> 16) & 0xFF );
+    printfHex( ((size_t)&heap >> 8) & 0xFF );
+    printfHex(  (size_t)&heap & 0xFF );
     printf("\nallocated: 0x");
-    printfHex(((size_t)allocated >> 24) & 0xFF);
-    printfHex(((size_t)allocated >> 16) & 0xFF);
-    printfHex(((size_t)allocated >> 8 ) & 0xFF);
-    printfHex(((size_t)allocated      ) & 0xFF);
+    void* test = memoryManager.malloc(1024);
+    printfHex( (((size_t)test) >> 24) & 0xFF );
+    printfHex( (((size_t)test) >> 16) & 0xFF );
+    printfHex( (((size_t)test) >> 8) & 0xFF );
+    printfHex( ((size_t)test) & 0xFF );
     printf("\n");
     
     TaskManager taskManager;
+    /*
     Task task1(&gdt, taskA);
     Task task2(&gdt, taskB);
     taskManager.AddTask(&task1);
     taskManager.AddTask(&task2);
-
+    */
     
     InterruptManager interrupts(0x20, &gdt, &taskManager);
-    SyscallHandler syscalls(&interrupts, 0x80);
     
     printf("Initializing Hardware, Stage 1\n");
     
@@ -236,9 +234,7 @@ extern "C" void kernelMain(const void* multiboot_structure, uint32_t /*multiboot
         PeripheralComponentInterconnectController PCIController;
         PCIController.SelectDrivers(&drvManager, &interrupts);
 
-        #ifdef GRAPHICSMODE
-            VideoGraphicsArray vga;
-        #endif
+        VideoGraphicsArray vga;
         
     printf("Initializing Hardware, Stage 2\n");
         drvManager.ActivateAll();
@@ -253,38 +249,42 @@ extern "C" void kernelMain(const void* multiboot_structure, uint32_t /*multiboot
         desktop.AddChild(&win2);
     #endif
 
-
-    /*
-    printf("\nS-ATA primary master: ");
-    AdvancedTechnologyAttachment ata0m(true, 0x1F0);
+        
+    // interrupt 14
+    AdvancedTechnologyAttachment ata0m(0x1F0, true);
+    printf("ATA Primary Master: ");
     ata0m.Identify();
     
-    printf("\nS-ATA primary slave: ");
-    AdvancedTechnologyAttachment ata0s(false, 0x1F0);
+    AdvancedTechnologyAttachment ata0s(0x1F0, false);
+    printf("ATA Primary Slave: ");
     ata0s.Identify();
-    ata0s.Write28(0, (uint8_t*)"http://www.AlgorithMan.de", 25);
-    ata0s.Flush();
-    ata0s.Read28(0, 25);
     
-    printf("\nS-ATA secondary master: ");
-    AdvancedTechnologyAttachment ata1m(true, 0x170);
-    ata1m.Identify();
     
-    printf("\nS-ATA secondary slave: ");
-    AdvancedTechnologyAttachment ata1s(false, 0x170);
-    ata1s.Identify();
+    printf("\n\n\n\n\n\n\n\n");
+    MSDOSPartitionTable::ReadPartitions(&ata0s);
+    
+    
+    //char* atabuffer = "http://AlgorithMan.de";
+    //ata0s.Write28(0, (uint8_t*)atabuffer,21);
+    //ata0s.Flush();
+    
+    //ata0s.Read28(0, (uint8_t*)atabuffer,21);
+    
+    // interrupt 15
+    AdvancedTechnologyAttachment ata1m(0x170, true);
+    AdvancedTechnologyAttachment ata1s(0x170, false);
+        
+    
     // third: 0x1E8
     // fourth: 0x168
-    */
-    
-    
+
+        /*
     amd_am79c973* eth0 = (amd_am79c973*)(drvManager.drivers[2]);
     eth0->Send((uint8_t*)"Hello Network", 13);
-        
+        */
 
     interrupts.Activate();
-
-
+    
     while(1)
     {
         #ifdef GRAPHICSMODE
